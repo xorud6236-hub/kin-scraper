@@ -231,12 +231,38 @@ app.post('/kin-detail', async (req, res) => {
     const page = await ctx.newPage();
 
     // 모바일 URL로 변환
-    let mobileUrl = url
-      .replace('kin.naver.com', 'm.kin.naver.com')
-      .replace('m.m.kin', 'm.kin');
+    let mobileUrl = url;
+    
+    // /qna/dirs/NNN/docs/NNN 형태 → 정규 모바일 URL로 변환
+    // 이 형태는 통합검색에서 수집된 단축 URL (PC에서 직접 접속 불가)
+    const dirsMatch = url.match(/\/qna\/dirs\/(\d+)\/docs\/(\d+)/);
+    if (dirsMatch) {
+      const dirId = dirsMatch[1];
+      const docId = dirsMatch[2];
+      mobileUrl = `https://m.kin.naver.com/mobile/qna/detail.naver?dirId=${dirId}&docId=${docId}`;
+      console.log(`[kin-detail] dirs URL 변환: ${url} → ${mobileUrl}`);
+    } else {
+      mobileUrl = mobileUrl
+        .replace('kin.naver.com', 'm.kin.naver.com')
+        .replace('m.m.kin', 'm.kin');
+    }
 
+    // 페이지 이동 (리다이렉트 따라감)
     await page.goto(mobileUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
     await page.waitForTimeout(2000);
+    
+    // 리다이렉트 후 최종 URL 확인 (에러 페이지 감지)
+    const finalUrl = page.url();
+    const finalTitle = await page.title();
+    
+    // "페이지를 찾을 수 없습니다" 감지
+    if (finalTitle.includes('찾을 수 없') || finalTitle.includes('오류') || finalTitle.includes('Error')) {
+      // 모바일 URL이 안 되면 PC URL로 재시도
+      let pcUrl = url.replace('m.kin.naver.com', 'kin.naver.com');
+      console.log(`[kin-detail] 모바일 URL 실패, PC URL로 재시도: ${pcUrl}`);
+      await page.goto(pcUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      await page.waitForTimeout(2000);
+    }
 
     // ── 디버그: 페이지 HTML 구조 로깅 ──
     const pageUrl = page.url();
