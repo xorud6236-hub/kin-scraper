@@ -78,14 +78,14 @@ app.post('/kin-search', async (req, res) => {
         { waitUntil: 'domcontentloaded', timeout: 15000 }
       );
 
-      // 스크롤해서 지식인 영역 로드
+      // 스크롤해서 지식인 영역 로드 (충분히 내려야 지식인 영역이 나옴)
       await page.evaluate(async () => {
-        for (let i = 0; i < 5; i++) {
+        for (let i = 0; i < 10; i++) {
           window.scrollBy(0, 1500);
           await new Promise(r => setTimeout(r, 400));
         }
       });
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(1500);
 
       // 지식인 링크 추출
       const searchResults = await page.evaluate(() => {
@@ -93,7 +93,11 @@ app.post('/kin-search', async (req, res) => {
         document.querySelectorAll('a[href]').forEach(link => {
           const href = link.href || '';
           if (!href.includes('kin.naver.com')) return;
-          if (!href.includes('detail')) return;
+          // /qna/dirs/ 패턴 (통합검색) 또는 /detail 패턴 모두 허용
+          if (!href.includes('/qna/') && !href.includes('detail')) return;
+          // 검색 목록 페이지 제외 (질문 상세 페이지만)
+          if (href.includes('search') || href.includes('searchList')) return;
+          if (href.includes('directoryDetail')) return;
 
           // 광고/AI 브리핑 제외
           let isAd = false;
@@ -115,7 +119,8 @@ app.post('/kin-search', async (req, res) => {
 
       for (const item of searchResults) {
         const url = item.url.replace('m.kin.naver.com', 'kin.naver.com');
-        const docIdMatch = url.match(/docId=(\d+)/);
+        // docId 추출: docId=N 또는 /docs/N 패턴 모두 지원
+        const docIdMatch = url.match(/docId=(\d+)/) || url.match(/\/docs\/(\d+)/);
         const key = docIdMatch ? docIdMatch[1] : url;
         if (!seen.has(key)) {
           seen.add(key);
@@ -152,9 +157,11 @@ app.post('/kin-search', async (req, res) => {
         // 검색 결과 리스트 항목에서 링크 추출
         document.querySelectorAll('a[href]').forEach(link => {
           const href = link.href || '';
-          // 지식인 질문 상세 페이지 링크만
-          if (!href.includes('detail')) return;
-          if (!href.includes('kin.naver.com') && !href.includes('/qna/')) return;
+          // 지식인 질문 상세 페이지 링크만 (/qna/ 또는 detail 포함)
+          if (!href.includes('/qna/') && !href.includes('detail')) return;
+          if (!href.includes('kin.naver.com')) return;
+          // 검색 목록 페이지 제외
+          if (href.includes('search') || href.includes('searchList')) return;
 
           const title = link.textContent.trim().replace(/\s+/g, ' ');
 
@@ -177,7 +184,7 @@ app.post('/kin-search', async (req, res) => {
         if (url.startsWith('/')) url = 'https://m.kin.naver.com' + url;
         url = url.replace('m.kin.naver.com', 'kin.naver.com');
 
-        const docIdMatch = url.match(/docId=(\d+)/);
+        const docIdMatch = url.match(/docId=(\d+)/) || url.match(/\/docs\/(\d+)/);
         const key = docIdMatch ? docIdMatch[1] : url;
 
         if (!seen.has(key)) {
