@@ -240,81 +240,43 @@ app.post('/kin-detail', async (req, res) => {
       let title = '';
       let body = '';
       let answerCount = 0;
-      const debug = { titleMethod: '', bodyMethod: '', allClasses: [] };
+      const debug = { titleMethod: '', bodyMethod: '' };
 
-      // ── 디버그: 페이지 내 주요 클래스 수집 ──
-      const allEls = document.querySelectorAll('div, section, article, h1, h2, h3');
-      const classSet = new Set();
-      allEls.forEach(el => {
-        const cls = (el.className || '').toString().trim();
-        if (cls && cls.length < 80) classSet.add(cls);
-      });
-      debug.allClasses = Array.from(classSet).slice(0, 30);
-
-      // ═════ 제목 추출 (확장된 셀렉터) ═════
+      // ═════ 제목 추출 ═════
+      // 실제 구조: div.EndTitle_endTitle__9e1qr 안에 제목 텍스트
       const titleSelectors = [
-        // 모바일 지식인 (2024~2026 구조)
+        // 2026년 모바일 지식인 실제 구조 (확인됨)
+        '[class*="EndTitle_endTitle"]',
+        '[class*="endTitle"]',
+        // 폴백
+        '#questionArea [class*="title"]:not([class*="Tag"])',
         '.question_title .title',
         '.c-heading__title',
-        '.question_area .title',
         'h3.title',
-        '.endTitleSection h3',
         'h2.title',
-        '.questionTitleArea .title',
-        // 추가 패턴
-        '.qna_title',
-        '.question_title',
-        '[class*="question"] [class*="title"]',
-        '[class*="heading"] [class*="title"]',
-        'h2[class*="title"]',
-        'h3[class*="title"]',
-        '.title_area h2',
-        '.title_area h3',
-        // 넓은 범위
-        'h2',
-        'h3',
       ];
 
       for (const sel of titleSelectors) {
         try {
-          const els = document.querySelectorAll(sel);
-          for (const el of els) {
-            // 답변/댓글 영역 안의 제목 제외
-            let skip = false;
-            let p = el.parentElement;
-            while (p) {
-              const cls = (p.className || '').toString().toLowerCase();
-              if (/answer|reply|comment|cmt/.test(cls)) { skip = true; break; }
-              p = p.parentElement;
-            }
-            if (skip) continue;
-
+          const el = document.querySelector(sel);
+          if (el) {
             const t = el.textContent.trim().replace(/\s+/g, ' ');
-            // 너무 짧거나, 메뉴 텍스트거나, 답변 관련이면 스킵
-            if (t.length < 5 || t.length > 300) continue;
-            if (/^(답변|댓글|관련|추천|더보기|로그인|나도 궁금|질문자 채택)/.test(t)) continue;
-            if (/^(조회|작성일|Q&A|지식인)/.test(t)) continue;
-
-            title = t;
-            debug.titleMethod = sel;
-            break;
+            if (t.length > 3 && t.length < 300) {
+              title = t;
+              debug.titleMethod = sel;
+              break;
+            }
           }
-          if (title) break;
         } catch (e) {}
       }
 
-      // title 태그 폴백 (": 네이버 지식iN" 제거)
+      // title 태그 폴백
       if (!title) {
-        title = (document.title || '')
-          .replace(/\s*:\s*네이버\s*지식iN.*$/i, '')
-          .replace(/\s*-\s*네이버\s*지식iN.*$/i, '')
-          .replace(/\s*:\s*지식iN.*$/i, '')
-          .replace(/\s*-\s*지식iN.*$/i, '')
-          .replace(/^\s*Q\.\s*/, '')
-          .trim();
-        debug.titleMethod = 'document.title fallback';
+        title = (document.title || '').trim();
+        debug.titleMethod = 'document.title';
       }
-      // 이미 셀렉터에서 가져온 제목에도 ": 네이버 지식iN" 제거 적용
+
+      // 제목에서 ": 네이버 지식iN" 등 제거
       title = title
         .replace(/\s*:\s*네이버\s*지식iN.*$/i, '')
         .replace(/\s*-\s*네이버\s*지식iN.*$/i, '')
@@ -322,24 +284,23 @@ app.post('/kin-detail', async (req, res) => {
         .replace(/\s*-\s*지식iN.*$/i, '')
         .trim();
 
-      // ═════ 질문 본문 추출 (확장된 셀렉터 + 텍스트 컷) ═════
+      // ═════ 질문 본문 추출 ═════
+      // 실제 구조: div.QnaEnd_questionDetail__2v8FM 안에 본문
+      // 질문 영역: div#questionArea (class: QnaEnd_contentArea__b_Unt QnaEnd_questionArea__w6RgZ)
+      // 답변 영역: div.QnaEnd_endAnswerArea__jhIPr (이것 밖에서만 추출)
+
       const bodySelectors = [
+        // 2026년 모바일 지식인 실제 구조 (확인됨)
+        '[class*="questionDetail"]',
+        '[class*="QnaEnd_questionDetail"]',
+        // questionArea 안의 본문 영역
+        '#questionArea [class*="questionDetail"]',
+        '#questionArea [class*="Detail"]',
+        // 폴백
         '.question_area .c-heading__content',
         '.c-heading__content',
-        '.question_content',
         '.endContents',
-        '.c-heading__body',
-        '.question_area .content',
         '._questionContentsArea',
-        '.questionDetailArea .content',
-        // 추가 패턴
-        '.qna_contents',
-        '.question_text',
-        '[class*="question"] [class*="content"]',
-        '[class*="question"] [class*="body"]',
-        '[class*="heading"] [class*="content"]',
-        '.se-main-container',
-        '.content_area',
       ];
 
       for (const sel of bodySelectors) {
@@ -350,9 +311,9 @@ app.post('/kin-detail', async (req, res) => {
             let isInAnswer = false;
             let parent = el.parentElement;
             while (parent) {
-              const cls = (parent.className || '').toString().toLowerCase();
-              const id = (parent.id || '').toLowerCase();
-              if (/answer|reply_area|answerArea/.test(cls) || /answer/.test(id)) { isInAnswer = true; break; }
+              const cls = (parent.className || '').toString();
+              const id = (parent.id || '');
+              if (/[Aa]nswer/.test(cls) || /[Aa]nswer/.test(id)) { isInAnswer = true; break; }
               parent = parent.parentElement;
             }
             if (isInAnswer) continue;
@@ -368,106 +329,64 @@ app.post('/kin-detail', async (req, res) => {
         } catch (e) {}
       }
 
-      // 질문 영역 내 p/span/div 태그 모아서 시도
+      // questionArea 전체에서 본문 추출 (위에서 못 찾은 경우)
       if (!body || body.length < 15) {
-        const qAreaSelectors = ['.question_area', '.endSection', '.c-heading', '.questionDetailArea', '[class*="question"]'];
-        for (const qs of qAreaSelectors) {
-          const qArea = document.querySelector(qs);
-          if (!qArea) continue;
-
-          // 이 영역이 답변 안에 있는지 확인
-          let inAns = false;
-          let pp = qArea.parentElement;
-          while (pp) {
-            if (/answer|reply/.test((pp.className || '').toString().toLowerCase())) { inAns = true; break; }
-            pp = pp.parentElement;
-          }
-          if (inAns) continue;
-
-          const texts = [];
-          qArea.querySelectorAll('p, span, div').forEach(el => {
-            if (el.children.length > 3) return; // 너무 많은 자식 = 컨테이너
-            const t = el.textContent.trim();
-            if (t.length > 15 && t.length < 2000 && !/^(답변|댓글|좋아요|조회수|작성일|나도 궁금|공유|신고)/.test(t)) {
-              texts.push(t);
+        const qArea = document.querySelector('#questionArea, [class*="questionArea"]');
+        if (qArea) {
+          // questionArea 안에서 UserInfo, EndTitle, TagList 영역을 제외한 나머지
+          const allText = qArea.innerText || '';
+          
+          // 제목 부분 제거
+          let cleaned = allText;
+          if (title) {
+            const tIdx = cleaned.indexOf(title);
+            if (tIdx >= 0) {
+              cleaned = cleaned.substring(tIdx + title.length);
             }
-          });
-          if (texts.length > 0) {
-            body = texts.join(' ').substring(0, 3000);
-            debug.bodyMethod = qs + ' > p/span/div';
-            break;
           }
-        }
-      }
-
-      // ═════ 최후의 수단: innerText에서 답변 앞부분만 추출 ═════
-      if (!body || body.length < 15) {
-        const fullText = document.body.innerText || '';
-
-        // "N개 답변", "답변하기", "답변 작성", "답변등록" 앞까지만 자르기
-        const cutMarkers = ['개 답변', '답변하기', '답변 작성', '답변등록', '답변 등록', '정보를 공유해 주세요'];
-        let cutIdx = fullText.length;
-        for (const marker of cutMarkers) {
-          const idx = fullText.indexOf(marker);
-          if (idx > 30 && idx < cutIdx) cutIdx = idx;
-        }
-        let questionPart = fullText.substring(0, cutIdx);
-
-        // 제목 찾기 (부분 매칭도 허용)
-        let titleIdx = -1;
-        if (title && title.length > 5) {
-          // 정확한 매칭 시도
-          titleIdx = questionPart.indexOf(title);
-          // 부분 매칭 (제목 앞 10자로)
-          if (titleIdx < 0) {
-            const partial = title.substring(0, Math.min(15, title.length));
-            titleIdx = questionPart.indexOf(partial);
-          }
-        }
-
-        if (titleIdx >= 0) {
-          const afterTitle = questionPart.substring(titleIdx + title.length);
-          // 줄 단위로 분리, 메타 정보 스킵
-          const lines = afterTitle.split('\n')
+          
+          // 줄 단위로 정리, 메타 정보 제거
+          const lines = cleaned.split('\n')
             .map(l => l.trim())
             .filter(l => {
-              if (l.length < 10) return false;
-              if (/^(조회수|작성일|비공개|프로필|지식iN|서비스|트렌드|#|나도 궁금|Q&A|네트워크)/.test(l)) return false;
-              if (/^(공유|댓글|좋아요|답변|채택)/.test(l)) return false;
+              if (l.length < 5) return false;
+              // 메타 정보 필터링
+              if (/^(지식iN|서비스|트렌드|조회수|조회 수|비공개|작성일|Q&A)/.test(l)) return false;
+              if (/^\d{4}\.\d{2}\.\d{2}/.test(l)) return false; // 날짜
+              if (/^#/.test(l)) return false; // 해시태그
+              if (/^(나도 궁금|공유|댓글|좋아요|답변|채택|네트워크|관리)/.test(l)) return false;
+              if (/^(정보를 공유|답변하기|답변 등록)/.test(l)) return false;
               return true;
             });
+
           if (lines.length > 0) {
             body = lines.join(' ').substring(0, 3000);
-            debug.bodyMethod = 'innerText cut (title match)';
-          }
-        }
-
-        // 제목 매칭도 실패하면 메타 정보 이후 첫 긴 텍스트 블록
-        if (!body || body.length < 15) {
-          const lines = questionPart.split('\n').map(l => l.trim()).filter(l => l.length > 20);
-          // 처음 몇 줄은 메뉴/메타이므로 스킵, 실질적인 질문 본문 찾기
-          for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-            if (/^(조회수|작성일|비공개|프로필|지식iN|서비스|#|나도|Q&A|네트워크|공유)/.test(line)) continue;
-            if (line.includes('지식인') && line.length < 30) continue;
-            // 이 줄이 질문 본문의 시작일 가능성이 높음
-            body = lines.slice(i).join(' ').substring(0, 3000);
-            debug.bodyMethod = 'innerText scan (line ' + i + ')';
-            break;
+            debug.bodyMethod = 'questionArea innerText cleanup';
           }
         }
       }
 
       // ═════ 답변 수 추출 ═════
+      // 실제 구조: "답변 3개" 텍스트
       try {
-        const ansEl = document.querySelector('.answer_count, .c-heading-answer__count, [class*="answer_count"]');
-        if (ansEl) {
-          const m = ansEl.textContent.match(/(\d+)/);
-          if (m) answerCount = parseInt(m[1]);
-        }
+        // 방법 1: "답변 N개" 패턴 매칭
+        const fullText = document.body.innerText || '';
+        const ansMatch = fullText.match(/답변\s*(\d+)\s*개/);
+        if (ansMatch) answerCount = parseInt(ansMatch[1]);
+        
+        // 방법 2: "N개 답변" 패턴
         if (answerCount === 0) {
-          const m = (document.body.textContent || '').match(/(\d+)\s*개\s*답변/);
-          if (m) answerCount = parseInt(m[1]);
+          const ansMatch2 = fullText.match(/(\d+)\s*개\s*답변/);
+          if (ansMatch2) answerCount = parseInt(ansMatch2[1]);
+        }
+
+        // 방법 3: endAnswerArea 관련 셀렉터
+        if (answerCount === 0) {
+          const ansEl = document.querySelector('[class*="endAnswerArea"], [class*="answer_count"], .answer_count');
+          if (ansEl) {
+            const m = ansEl.textContent.match(/(\d+)/);
+            if (m) answerCount = parseInt(m[1]);
+          }
         }
       } catch (e) {}
 
