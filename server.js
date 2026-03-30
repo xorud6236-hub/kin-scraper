@@ -82,25 +82,39 @@ app.post('/kin-search', async (req, res) => {
       );
 
       // 스크롤해서 지식인 영역 로드 (충분히 내려야 지식인 영역이 나옴)
+      // 맨 아래까지 스크롤 → 다시 위로 → 다시 아래로 (lazy load 트리거)
       await page.evaluate(async () => {
-        for (let i = 0; i < 10; i++) {
-          window.scrollBy(0, 1500);
-          await new Promise(r => setTimeout(r, 400));
+        for (let i = 0; i < 15; i++) {
+          window.scrollBy(0, 1200);
+          await new Promise(r => setTimeout(r, 350));
         }
+        // 맨 아래까지 갔다가 잠시 대기
+        window.scrollTo(0, document.body.scrollHeight);
+        await new Promise(r => setTimeout(r, 1000));
+        // 다시 위로 갔다가 아래로 (추가 lazy load 트리거)
+        window.scrollTo(0, 0);
+        await new Promise(r => setTimeout(r, 500));
+        window.scrollTo(0, document.body.scrollHeight);
+        await new Promise(r => setTimeout(r, 1000));
       });
-      await page.waitForTimeout(1500);
+      await page.waitForTimeout(2000);
 
       // 지식인 링크 추출
       const searchResults = await page.evaluate(() => {
         const items = [];
+        const seenHrefs = new Set();
         document.querySelectorAll('a[href]').forEach(link => {
           const href = link.href || '';
           if (!href.includes('kin.naver.com')) return;
-          // /qna/dirs/ 패턴 (통합검색) 또는 /detail 패턴 모두 허용
+          // /qna/ 패턴 또는 /detail 패턴 허용
           if (!href.includes('/qna/') && !href.includes('detail')) return;
-          // 검색 목록 페이지 제외 (질문 상세 페이지만)
+          // 검색 목록 페이지 제외
           if (href.includes('search') || href.includes('searchList')) return;
           if (href.includes('directoryDetail')) return;
+
+          // 동일 href 중복 방지
+          const cleanHref = href.split('?')[0]; // 쿼리스트링 제거 후 비교
+          if (seenHrefs.has(cleanHref)) return;
 
           // 광고/AI 브리핑 제외
           let isAd = false;
@@ -112,8 +126,19 @@ app.post('/kin-search', async (req, res) => {
           }
           if (isAd) return;
 
-          const title = link.textContent.trim().replace(/\s+/g, ' ');
-          if (title.length > 5 && title.length < 300) {
+          // 제목: 링크 텍스트 또는 부모 요소 텍스트
+          let title = link.textContent.trim().replace(/\s+/g, ' ');
+          if (title.length <= 5) {
+            // 링크 텍스트가 짧으면 부모에서 제목 추출 시도
+            const parentEl = link.closest('div, li, article');
+            if (parentEl) {
+              const parentText = parentEl.textContent.trim().replace(/\s+/g, ' ').substring(0, 200);
+              if (parentText.length > 5) title = parentText;
+            }
+          }
+
+          if (title.length > 3 && title.length < 300) {
+            seenHrefs.add(cleanHref);
             items.push({ url: href, title: title });
           }
         });
@@ -121,7 +146,8 @@ app.post('/kin-search', async (req, res) => {
       });
 
       for (const item of searchResults) {
-        const url = item.url.replace('m.kin.naver.com', 'kin.naver.com');
+        // 모바일 URL 그대로 유지 (m.kin → kin 변환 제거)
+        const url = item.url;
         // docId 추출: docId=N 또는 /docs/N 패턴 모두 지원
         const docIdMatch = url.match(/docId=(\d+)/) || url.match(/\/docs\/(\d+)/);
         const key = docIdMatch ? docIdMatch[1] : url;
@@ -187,7 +213,7 @@ app.post('/kin-search', async (req, res) => {
 
         let url = item.url;
         if (url.startsWith('/')) url = 'https://m.kin.naver.com' + url;
-        url = url.replace('m.kin.naver.com', 'kin.naver.com');
+        // 모바일 URL 그대로 유지
 
         const docIdMatch = url.match(/docId=(\d+)/) || url.match(/\/docs\/(\d+)/);
         const key = docIdMatch ? docIdMatch[1] : url;
@@ -246,13 +272,19 @@ app.post('/kin-detail', async (req, res) => {
     const docId = dirsMatch ? dirsMatch[2] : null;
     
     if (dirsMatch) {
-      // 시도 1: 모바일 dirs URL 그대로 접속 (최신글에서는 이 형태로 성공했음)
-      mobileUrl = `https://m.kin.naver.com/qna/dirs/${dirId}/docs/${docId}`;
-      console.log(`[kin-detail] dirs URL 변환: ${url} → ${mobileUrl}`);
+      // URL이 이미 m.kin.naver.com이면 그대로, 아니면 모바일로 변환
+      if (url.includes('m.kin.naver.com')) {
+        mobileUrl = url; // 이미 모바일 URL
+      } else {
+        mobileUrl = `https://m.kin.naver.com/qna/dirs/${dirId}/docs/${docId}`;
+      }
+      console.log(`[kin-detail] dirs URL: ${mobileUrl}`);
     } else {
-      mobileUrl = mobileUrl
-        .replace('kin.naver.com', 'm.kin.naver.com')
-        .replace('m.m.kin', 'm.kin');
+      if (!url.includes('m.kin.naver.com')) {
+        mobileUrl = mobileUrl
+          .replace('kin.naver.com', 'm.kin.naver.com')
+          .replace('m.m.kin', 'm.kin');
+      }
     }
 
     // 페이지 이동 (리다이렉트 따라감)
