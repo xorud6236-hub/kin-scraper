@@ -99,7 +99,7 @@ app.post('/kin-search', async (req, res) => {
       });
       await page.waitForTimeout(2000);
 
-      // 지식인 링크 추출 + 전문가/지식파트너 뱃지 감지
+      // 지식인 링크 추출 + 답변자 프로필 감지
       const searchResults = await page.evaluate(() => {
         const items = [];
         const seenHrefs = new Set();
@@ -136,65 +136,86 @@ app.post('/kin-search', async (req, res) => {
             }
           }
 
-          // ═════ 전문가/지식파트너 뱃지 감지 ═════
-          // 이 지식인 결과 항목의 컨테이너에서 답변자 뱃지 확인
-          let expertBadge = '';
+          // ═════ 답변자 프로필 감지 ═════
+          // HTML 구조: div[data-sds-comp="Profile"] 안에
+          //   - sds-comps-profile-info-title-text > a > span = 답변자 이름
+          //   - 이름 옆 div > span = 카테고리 (예: "대학교/대학원학습")
+          //   - sds-comps-profile-info-subtext = 시간 ("2주 전")
+          let answerer = '';
           
-          // 상위 컨테이너 찾기 (지식인 결과 항목 1개를 감싸는 div)
-          const container = link.closest('[class*="fender"], [class*="kin"], [class*="answer"], [data-cr-area]') 
-                         || link.closest('div > div > div') // 3단계 상위까지
-                         || link.parentElement?.parentElement?.parentElement;
+          // 질문 링크의 상위 컨테이너 탐색 (8단계까지)
+          let container = link.parentElement;
+          for (let i = 0; i < 8 && container && container !== document.body; i++) {
+            container = container.parentElement;
+          }
           
           if (container) {
-            // 컨테이너 내에서 뱃지/태그 텍스트 찾기
-            const allText = container.textContent || '';
-            
-            // 지식파트너 체크
-            if (allText.includes('지식파트너')) {
-              expertBadge = '지식파트너';
-            }
-            
-            // 프로필 영역에서 전문가 뱃지 추출
-            const profileEls = container.querySelectorAll(
-              '[class*="profile-info"], [class*="badge"], [class*="tag"], [class*="expert"], ' +
-              '[class*="partner"], [class*="subcategory"], [class*="subtext"]'
-            );
-            
-            for (const el of profileEls) {
-              const badgeText = el.textContent.trim();
-              // 전문가 자격 뱃지 감지 패턴
-              if (/지식파트너|전문가|지도사|기사|기능사|기술사|자격증|교수|박사|상담사|변호사|세무사|노무사|의사|약사/.test(badgeText)) {
-                // 너무 긴 텍스트는 뱃지가 아님
-                if (badgeText.length < 30) {
-                  expertBadge = badgeText;
-                  break;
-                }
-              }
-            }
-
-            // 답변자 링크(.answer 클래스) 근처에서 뱃지 확인
-            if (!expertBadge) {
-              const answerLinks = container.querySelectorAll('a[class*="answer"], a[data-heatmap-target="answer"]');
-              for (const aLink of answerLinks) {
-                const aContainer = aLink.closest('div');
-                if (aContainer) {
-                  const spans = aContainer.querySelectorAll('span, em, strong, div');
-                  for (const span of spans) {
-                    const st = span.textContent.trim();
-                    if (/지식파트너|전문가/.test(st) && st.length < 20) {
-                      expertBadge = st;
-                      break;
-                    }
+            // 방법 1: data-sds-comp="Profile" 요소에서 답변자 정보 추출
+            const profiles = container.querySelectorAll('[data-sds-comp="Profile"]');
+            for (const profile of profiles) {
+              // 답변자 이름
+              const nameEl = profile.querySelector('[class*="profile-info-title"] a span span');
+              if (!nameEl) continue;
+              const name = nameEl.textContent.trim();
+              if (!name || name.length < 2) continue;
+              
+              // 카테고리/뱃지 (이름과 같은 레벨의 div 안의 span)
+              const titleDiv = profile.querySelector('[class*="profile-info-title"]');
+              let category = '';
+              if (titleDiv) {
+                const catDivs = titleDiv.querySelectorAll('div span');
+                for (const catEl of catDivs) {
+                  const ct = catEl.textContent.trim();
+                  if (ct && ct !== name && ct.length > 1 && ct.length < 30) {
+                    category = ct;
+                    break;
                   }
                 }
-                if (expertBadge) break;
+              }
+              
+              answerer = category ? name + ' (' + category + ')' : name;
+              break;
+            }
+            
+            // 방법 2: data-heatmap-target=".profile" 링크 근처
+            if (!answerer) {
+              const profLinks = container.querySelectorAll('a[data-heatmap-target=".profile"]');
+              for (const pLink of profLinks) {
+                const profContainer = pLink.closest('[class*="profile"]');
+                if (!profContainer) continue;
+                const spans = profContainer.querySelectorAll('span');
+                const texts = [];
+                for (const sp of spans) {
+                  const st = sp.textContent.trim();
+                  // 이름과 카테고리만 수집 (시간 정보 제외)
+                  if (st && st.length > 1 && st.length < 25 && 
+                      !/^\d/.test(st) && !/전$/.test(st) && !/주 전/.test(st) && !/분 전/.test(st)) {
+                    texts.push(st);
+                  }
+                }
+                // 중복 제거
+                const unique = [...new Set(texts)];
+                if (unique.length >= 2) {
+                  answerer = unique[0] + ' (' + unique[1] + ')';
+                } else if (unique.length === 1) {
+                  answerer = unique[0];
+                }
+                if (answerer) break;
+              }
+            }
+            
+            // 방법 3: "지식파트너" 텍스트 전체 검색
+            if (!answerer) {
+              const fullText = container.textContent || '';
+              if (fullText.includes('지식파트너')) {
+                answerer = '지식파트너';
               }
             }
           }
 
           if (title.length > 3 && title.length < 300) {
             seenHrefs.add(cleanHref);
-            items.push({ url: href, title: title, expertBadge: expertBadge || '' });
+            items.push({ url: href, title: title, answerer: answerer || '' });
           }
         });
         return items;
@@ -208,9 +229,9 @@ app.post('/kin-search', async (req, res) => {
         const key = docIdMatch ? docIdMatch[1] : url;
         if (!seen.has(key)) {
           seen.add(key);
-          allQuestions.push({ url: url, title: item.title, channel: '통합검색', expertBadge: item.expertBadge || '' });
-          if (item.expertBadge) {
-            console.log(`[kin-search] 전문가 감지: ${item.expertBadge} — ${item.title.substring(0, 30)}`);
+          allQuestions.push({ url: url, title: item.title, channel: '통합검색', answerer: item.answerer || '' });
+          if (item.answerer) {
+            console.log(`[kin-search] 답변자 감지: ${item.answerer} — ${item.title.substring(0, 30)}`);
           }
         }
       }
@@ -278,7 +299,7 @@ app.post('/kin-search', async (req, res) => {
 
         if (!seen.has(key)) {
           seen.add(key);
-          allQuestions.push({ url: url, title: item.title, channel: '최신글', expertBadge: '' });
+          allQuestions.push({ url: url, title: item.title, channel: '최신글', answerer: '' });
           count++;
         }
       }
