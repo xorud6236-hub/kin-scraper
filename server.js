@@ -99,125 +99,127 @@ app.post('/kin-search', async (req, res) => {
       });
       await page.waitForTimeout(2000);
 
-      // 지식인 링크 추출 + 답변자 프로필 감지
+      // 지식인 링크 추출 — kinItem 컨테이너 단위로 처리
+      // 실제 HTML 구조 (2026년 네이버 모바일 통합검색):
+      //   div[data-template-id="kinItem"] = 지식인 결과 1개 컨테이너
+      //     a[data-heatmap-target=".title"] > span = 질문 제목
+      //     a[data-heatmap-target=".answer"] = 답변 미리보기
+      //     div[data-sds-comp="Profile"] (답변자 프로필):
+      //       span.iFBHctLXA6ggqGF55WRk = 답변자 이름
+      //       span[class*="text-type-badge"] = 뱃지 ("지식파트너", "컨설턴트")
+      //       span.wf5yhegUPxcbCIBKXgyc = 카테고리 ("학사 행정, 제도")
       const searchResults = await page.evaluate(() => {
         const items = [];
-        const seenHrefs = new Set();
-        document.querySelectorAll('a[href]').forEach(link => {
-          const href = link.href || '';
-          if (!href.includes('kin.naver.com')) return;
-          // /qna/ 패턴 또는 /detail 패턴 허용
-          if (!href.includes('/qna/') && !href.includes('detail')) return;
-          // 검색 목록 페이지 제외
-          if (href.includes('search') || href.includes('searchList')) return;
-          if (href.includes('directoryDetail')) return;
-
-          // 동일 href 중복 방지
-          const cleanHref = href.split('?')[0];
-          if (seenHrefs.has(cleanHref)) return;
-
-          // 광고/AI 브리핑 제외
-          let isAd = false;
-          let parent = link;
-          while (parent && parent !== document.body) {
-            const cls = (parent.className || '').toString().toLowerCase();
-            if (/ad_area|sp_nad|sponsored|power_link/.test(cls)) { isAd = true; break; }
-            parent = parent.parentElement;
-          }
-          if (isAd) return;
-
-          // 제목: 링크 텍스트 또는 부모 요소 텍스트
-          let title = link.textContent.trim().replace(/\s+/g, ' ');
-          if (title.length <= 5) {
-            const parentEl = link.closest('div, li, article');
-            if (parentEl) {
-              const parentText = parentEl.textContent.trim().replace(/\s+/g, ' ').substring(0, 200);
-              if (parentText.length > 5) title = parentText;
-            }
-          }
-
-          // ═════ 답변자 프로필 감지 ═════
-          // HTML 구조: div[data-sds-comp="Profile"] 안에
-          //   - sds-comps-profile-info-title-text > a > span = 답변자 이름
-          //   - 이름 옆 div > span = 카테고리 (예: "대학교/대학원학습")
-          //   - sds-comps-profile-info-subtext = 시간 ("2주 전")
+        const seenDocs = new Set();
+        
+        // kinItem 컨테이너를 직접 찾음
+        const kinItems = document.querySelectorAll('[data-template-id="kinItem"]');
+        
+        for (const item of kinItems) {
+          // 질문 제목 링크 (.title)
+          const titleLink = item.querySelector('a[data-heatmap-target=".title"]');
+          if (!titleLink) continue;
+          
+          const href = titleLink.href || '';
+          if (!href.includes('kin.naver.com')) continue;
+          
+          // docId로 중복 체크
+          const docMatch = href.match(/\/docs\/(\d+)/) || href.match(/docId=(\d+)/);
+          const docKey = docMatch ? docMatch[1] : href;
+          if (seenDocs.has(docKey)) continue;
+          
+          // 제목 텍스트
+          const titleSpan = titleLink.querySelector('span');
+          const title = titleSpan ? titleSpan.textContent.trim().replace(/\s+/g, ' ') : '';
+          if (!title || title.length < 3) continue;
+          
+          // ═════ 답변자 프로필 추출 ═════
+          // 답변 영역의 Profile (질문 영역 Profile은 "네이버 지식iN"이므로 제외)
           let answerer = '';
           
-          // 질문 링크의 상위 컨테이너 탐색 (8단계까지)
-          let container = link.parentElement;
-          for (let i = 0; i < 8 && container && container !== document.body; i++) {
-            container = container.parentElement;
+          // 답변 미리보기가 있는 영역 안의 Profile만 가져옴
+          const answerArea = item.querySelector('a[data-heatmap-target=".answer"]');
+          if (answerArea) {
+            // 답변 미리보기의 부모에서 Profile 찾기
+            const answerContainer = answerArea.parentElement;
+            if (answerContainer) {
+              const profile = answerContainer.querySelector('[data-sds-comp="Profile"]');
+              if (profile) {
+                // 이름 추출
+                const nameEl = profile.querySelector('[class*="iFBHctLXA6ggqGF55WRk"]') 
+                            || profile.querySelector('[class*="profile-info-title"] a span span');
+                const name = nameEl ? nameEl.textContent.trim() : '';
+                
+                // 뱃지 추출 ("지식파트너", "컨설턴트" 등)
+                const badgeEl = profile.querySelector('[class*="dbfbgYbwLHuemBLyfJ4V"]')
+                             || profile.querySelector('[class*="text-type-badge"]');
+                const badge = badgeEl ? badgeEl.textContent.trim() : '';
+                
+                // 카테고리 추출 ("학사 행정, 제도" 등)
+                const catEl = profile.querySelector('[class*="wf5yhegUPxcbCIBKXgyc"]');
+                const category = catEl ? catEl.textContent.trim() : '';
+                
+                // 조합: "이름 [뱃지] (카테고리)"
+                if (name && name !== '네이버 지식iN') {
+                  const parts = [name];
+                  if (badge) parts.push('[' + badge + ']');
+                  if (category) parts.push('(' + category + ')');
+                  answerer = parts.join(' ');
+                }
+              }
+            }
           }
           
-          if (container) {
-            // 방법 1: data-sds-comp="Profile" 요소에서 답변자 정보 추출
-            const profiles = container.querySelectorAll('[data-sds-comp="Profile"]');
-            for (const profile of profiles) {
-              // 답변자 이름
-              const nameEl = profile.querySelector('[class*="profile-info-title"] a span span');
-              if (!nameEl) continue;
-              const name = nameEl.textContent.trim();
-              if (!name || name.length < 2) continue;
+          // Profile을 못 찾았으면 kinItem 전체에서 두 번째 Profile 시도
+          // (첫 번째 Profile은 "네이버 지식iN", 두 번째가 답변자)
+          if (!answerer) {
+            const allProfiles = item.querySelectorAll('[data-sds-comp="Profile"]');
+            if (allProfiles.length >= 2) {
+              const profile = allProfiles[1]; // 두 번째 = 답변자
               
-              // 카테고리/뱃지 (이름과 같은 레벨의 div 안의 span)
-              const titleDiv = profile.querySelector('[class*="profile-info-title"]');
-              let category = '';
-              if (titleDiv) {
-                const catDivs = titleDiv.querySelectorAll('div span');
-                for (const catEl of catDivs) {
-                  const ct = catEl.textContent.trim();
-                  if (ct && ct !== name && ct.length > 1 && ct.length < 30) {
-                    category = ct;
-                    break;
-                  }
-                }
-              }
+              const nameEl = profile.querySelector('[class*="iFBHctLXA6ggqGF55WRk"]')
+                          || profile.querySelector('[class*="profile-info-title"] a span span');
+              const name = nameEl ? nameEl.textContent.trim() : '';
               
-              answerer = category ? name + ' (' + category + ')' : name;
-              break;
-            }
-            
-            // 방법 2: data-heatmap-target=".profile" 링크 근처
-            if (!answerer) {
-              const profLinks = container.querySelectorAll('a[data-heatmap-target=".profile"]');
-              for (const pLink of profLinks) {
-                const profContainer = pLink.closest('[class*="profile"]');
-                if (!profContainer) continue;
-                const spans = profContainer.querySelectorAll('span');
-                const texts = [];
-                for (const sp of spans) {
-                  const st = sp.textContent.trim();
-                  // 이름과 카테고리만 수집 (시간 정보 제외)
-                  if (st && st.length > 1 && st.length < 25 && 
-                      !/^\d/.test(st) && !/전$/.test(st) && !/주 전/.test(st) && !/분 전/.test(st)) {
-                    texts.push(st);
-                  }
-                }
-                // 중복 제거
-                const unique = [...new Set(texts)];
-                if (unique.length >= 2) {
-                  answerer = unique[0] + ' (' + unique[1] + ')';
-                } else if (unique.length === 1) {
-                  answerer = unique[0];
-                }
-                if (answerer) break;
-              }
-            }
-            
-            // 방법 3: "지식파트너" 텍스트 전체 검색
-            if (!answerer) {
-              const fullText = container.textContent || '';
-              if (fullText.includes('지식파트너')) {
-                answerer = '지식파트너';
+              const badgeEl = profile.querySelector('[class*="dbfbgYbwLHuemBLyfJ4V"]')
+                           || profile.querySelector('[class*="text-type-badge"]');
+              const badge = badgeEl ? badgeEl.textContent.trim() : '';
+              
+              const catEl = profile.querySelector('[class*="wf5yhegUPxcbCIBKXgyc"]');
+              const category = catEl ? catEl.textContent.trim() : '';
+              
+              if (name && name !== '네이버 지식iN') {
+                const parts = [name];
+                if (badge) parts.push('[' + badge + ']');
+                if (category) parts.push('(' + category + ')');
+                answerer = parts.join(' ');
               }
             }
           }
-
-          if (title.length > 3 && title.length < 300) {
-            seenHrefs.add(cleanHref);
-            items.push({ url: href, title: title, answerer: answerer || '' });
-          }
-        });
+          
+          seenDocs.add(docKey);
+          items.push({ url: href, title: title, answerer: answerer || '' });
+        }
+        
+        // kinItem이 없으면 기존 방식 폴백 (a[href] 전체 스캔)
+        if (items.length === 0) {
+          document.querySelectorAll('a[href]').forEach(link => {
+            const href = link.href || '';
+            if (!href.includes('kin.naver.com')) return;
+            if (!href.includes('/qna/') && !href.includes('detail')) return;
+            if (href.includes('search') || href.includes('profileLink')) return;
+            
+            const cleanHref = href.split('?')[0];
+            if (seenDocs.has(cleanHref)) return;
+            
+            const title = link.textContent.trim().replace(/\s+/g, ' ');
+            if (title.length > 5 && title.length < 300) {
+              seenDocs.add(cleanHref);
+              items.push({ url: href, title: title, answerer: '' });
+            }
+          });
+        }
+        
         return items;
       });
 
